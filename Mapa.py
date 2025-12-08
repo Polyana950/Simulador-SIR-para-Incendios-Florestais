@@ -27,7 +27,7 @@ class Mapa:
         if seed is not None:
             random.seed(seed)
         colors = ['red', 'orange', 'blue', 'green']
-        weights = [0.2, 0.3, 0.3, 0.2]
+        weights = [0.2, 0.2, 0.4, 0.2]
         for node in self.graph.nodes():
             self.node_colors[node] = random.choices(
                 colors, weights=weights, k=1)[0]

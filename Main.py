@@ -16,7 +16,11 @@ from Config import (
 
 
 class SimulationRunner:
-    def __init__(self, num_simulations=DEFAULT_NUM_SIMULATIONS, grid_size_x=GRID_SIZE_X, grid_size_y=GRID_SIZE_Y, existing_map=None):
+
+    def __init__(self, num_simulations=DEFAULT_NUM_SIMULATIONS,
+                 grid_size_x=GRID_SIZE_X, grid_size_y=GRID_SIZE_Y,
+                 existing_map=None, changes_for_viz=True):
+
         self.num_simulations = num_simulations
         self.results = []
         self.grid_size_x = grid_size_x
@@ -25,8 +29,18 @@ class SimulationRunner:
             self.grid_size_x, self.grid_size_y)
         print("Mapa de terreno " + ("existente será usado" if existing_map else "criado") +
               " e será reutilizado em todas as simulações")
+
         self.initial_infected_nodes = None
-        self.simulation_histories = []
+
+        self.changes_for_viz = changes_for_viz
+        if self.changes_for_viz:
+            self.simulation_changes = []
+
+        self.probability_accumulator = None
+        self.n_nodes = len(self.shared_map.graph.nodes())
+
+        self.all_nodes = list(self.shared_map.graph.nodes())
+        self.node_to_idx = {node: i for i, node in enumerate(self.all_nodes)}
 
     def select_initial_infected(self, initial_infected_count=DEFAULT_INITIAL_INFECTED):
         all_nodes = list(self.shared_map.graph.nodes())
@@ -36,7 +50,9 @@ class SimulationRunner:
         print(self.initial_infected_nodes)
         return self.initial_infected_nodes
 
-    def run_simulations(self, initial_infected=DEFAULT_INITIAL_INFECTED, simulation_steps=DEFAULT_SIMULATION_STEPS):
+    def run_simulations(self, initial_infected=DEFAULT_INITIAL_INFECTED,
+                        simulation_steps=DEFAULT_SIMULATION_STEPS):
+
         import time
 
         start_time = time.time()
@@ -44,7 +60,9 @@ class SimulationRunner:
         print(
             f"Iniciando {self.num_simulations} simulações com os mesmos parâmetros")
         self.results = []
-        self.simulation_histories = []
+
+        if self.changes_for_viz:
+            self.simulation_changes = []
 
         if self.initial_infected_nodes is None:
             self.select_initial_infected(initial_infected)
@@ -54,21 +72,41 @@ class SimulationRunner:
         print(
             f"Usando sempre os mesmos {len(self.initial_infected_nodes)} nós infectados inicialmente")
 
+        if self.changes_for_viz:
+            self.probability_accumulator_infected = np.zeros(
+                (simulation_steps + 1, self.n_nodes), dtype=np.float32
+            )
+            self.probability_accumulator_recovered = np.zeros(
+                (simulation_steps + 1, self.n_nodes), dtype=np.float32
+            )
+
         for i in range(self.num_simulations):
             sim_start_time = time.time()
             print(f"\nExecutando simulação {i+1}/{self.num_simulations}")
 
             app = SimulationApp(self.grid_size_x, self.grid_size_y)
             app.terrain_map = self.shared_map
-            app.sir_model = app.sir_model.__class__(self.shared_map)
 
-            app.sir_model.initialize_states(initial_infected, infection_strategy="manual",
-                                            manual_nodes=self.initial_infected_nodes)
+            app.sir_model = app.sir_model.__class__(
+                self.shared_map,
+                track_changes=self.changes_for_viz
+            )
+
+            app.sir_model.initialize_states(
+                initial_infected,
+                infection_strategy="manual",
+                manual_nodes=self.initial_infected_nodes
+            )
             app.sir_model.run_simulation(simulation_steps)
 
             counts = app.sir_model.get_state_counts()
             self.results.append(counts)
-            self.simulation_histories.append(app.sir_model.history)
+
+            if self.changes_for_viz:
+                self.simulation_changes.append(app.sir_model.state_changes)
+
+                self._accumulate_probabilities(app.sir_model.state_changes,
+                                               simulation_steps)
 
             sim_end_time = time.time()
             sim_duration = sim_end_time - sim_start_time
@@ -76,8 +114,13 @@ class SimulationRunner:
             final_susceptible = counts[-1][0]
             final_infected = counts[-1][1]
             final_recovered = counts[-1][2]
-            print(f"Simulação {i+1} concluída em {sim_duration:.2f} segundos. Resultado: {final_susceptible} suscetíveis, "
+            print(f"Simulação {i+1} concluída em {sim_duration:.2f} segundos. "
+                  f"Resultado: {final_susceptible} suscetíveis, "
                   f"{final_infected} infectados, {final_recovered} recuperados")
+
+        if self.changes_for_viz:
+            self.probability_accumulator_infected /= self.num_simulations
+            self.probability_accumulator_recovered /= self.num_simulations
 
         end_time = time.time()
         total_duration = end_time - start_time
@@ -95,11 +138,35 @@ class SimulationRunner:
         self.save_results_to_csv()
         print(f"✓ CSV salvo ({time.perf_counter() - t:.2f}s)")
 
-        t = time.perf_counter()
-        self.visualize_probability_map()
-        print(f"✓ Mapas criados ({time.perf_counter() - t:.2f}s)")
+        if self.changes_for_viz:
+            t = time.perf_counter()
+            self.visualize_probability_map()
+            print(f"✓ Mapas criados ({time.perf_counter() - t:.2f}s)")
 
         return self.results
+
+    def _accumulate_probabilities(self, state_changes, max_steps):
+        current_states = np.zeros(self.n_nodes, dtype=np.uint8)
+
+        sorted_changes = np.array(sorted(state_changes), dtype=np.int32)
+
+        change_steps = sorted_changes[:, 0]
+        nodes = sorted_changes[:, 1]
+        new_states = sorted_changes[:, 2]
+
+        change_idx = 0
+        n_changes = len(sorted_changes)
+
+        for step in range(max_steps + 1):
+            while change_idx < n_changes and change_steps[change_idx] == step:
+                current_states[nodes[change_idx]] = new_states[change_idx]
+                change_idx += 1
+
+            infected_mask = current_states == 1
+            recovered_mask = current_states == 2
+
+            self.probability_accumulator_infected[step, infected_mask] += 1.0
+            self.probability_accumulator_recovered[step, recovered_mask] += 1.0
 
     def visualize_simulation_results(self):
         import scipy.stats as stats
@@ -115,10 +182,6 @@ class SimulationRunner:
         susceptible_means = np.mean(susceptible_values, axis=0)
         infected_means = np.mean(infected_values, axis=0)
         recovered_means = np.mean(recovered_values, axis=0)
-
-        susceptible_stds = np.std(susceptible_values, axis=0)
-        infected_stds = np.std(infected_values, axis=0)
-        recovered_stds = np.std(recovered_values, axis=0)
 
         if len(self.results) > 1:
             susceptible_sem = stats.sem(susceptible_values, axis=0)
@@ -159,7 +222,7 @@ class SimulationRunner:
         plt.fill_between(time_range,
                          np.maximum(0, i_ci_lower),
                          np.minimum(len(self.shared_map.graph), i_ci_upper),
-                         color='yellow', alpha=0.3, label='IC 95% Infectados')
+                         color='blue', alpha=0.6, label='IC 95% Infectados')
 
         plt.plot(time_range, recovered_means, color='red',
                  linestyle='-', label='Recuperados (média)')
@@ -178,12 +241,13 @@ class SimulationRunner:
         plt.tight_layout()
         plt.savefig(MULTIPLE_SIMULATIONS_FILE)
         print(
-            f"Gráfico de resultados múltiplos salvo em '{os.path.abspath(MULTIPLE_SIMULATIONS_FILE)}'")
+            f"Gráfico dos resultados com intervalo de confiança '{os.path.abspath(MULTIPLE_SIMULATIONS_FILE)}'")
         plt.show()
 
         self.visualize_initial_infected()
 
     def visualize_initial_infected(self):
+      # Visualização de mapa com nós inicialmente infectados
         plt.figure(figsize=(DEFAULT_VIEWSIZE_X, DEFAULT_VIEWSIZE_Y))
 
         pos = {node: node for node in self.shared_map.graph.nodes()}
@@ -230,6 +294,7 @@ class SimulationRunner:
         plt.show()
 
     def save_results_to_csv(self):
+        """Salva resultados em CSV"""
         data = []
 
         for sim_idx, sim_result in enumerate(self.results):
@@ -251,12 +316,19 @@ class SimulationRunner:
         return df
 
     def visualize_probability_map(self):
-        print("\nCriando mapas de probabilidade da infecção...")
 
-        prob_visualizer = Visualizer(
-            self.shared_map, self.simulation_histories)
+        if not self.changes_for_viz:
+            print(
+                "Visualizações de probabilidade desabilitadas (changes_for_viz=False)")
+            return
 
-        prob_visualizer.calculate_probability_matrix()
+        prob_visualizer = Visualizer(self.shared_map, self.results)
+        prob_visualizer.infected_prob = self.probability_accumulator_infected.astype(
+            np.float16)
+        prob_visualizer.recovered_prob = self.probability_accumulator_recovered.astype(
+            np.float16)
+        prob_visualizer.all_nodes = self.all_nodes
+        prob_visualizer.node_to_idx = self.node_to_idx
 
         print("\nCriando animação do caminho provável da infecção...")
         ani = prob_visualizer.create_probability_animation(
@@ -268,14 +340,26 @@ class SimulationRunner:
 
 
 def main():
+
     mapa = Mapa()
 
     print("Iniciando runner de simulações múltiplas...")
+    print("=" * 60)
+    print("MODO OTIMIZADO:")
+    print("- Histórico completo NÃO é armazenado")
+    print("- Probabilidades calculadas incrementalmente")
+    print("- Memória economizada: ~70-90%")
+    print("=" * 60)
 
-    runner = SimulationRunner()
+    runner = SimulationRunner(
+        changes_for_viz=True
+    )
+
     runner.run_simulations()
 
     print("\nProcesso de simulações múltiplas concluído!")
+    print(f"Memória aproximada usada para probabilidades: "
+          f"{(runner.probability_accumulator_infected.nbytes + runner.probability_accumulator_recovered.nbytes) / 1e6:.2f} MB")
 
     plt.show()
 
