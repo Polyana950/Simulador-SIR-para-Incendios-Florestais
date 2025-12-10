@@ -111,12 +111,8 @@ class SimulationRunner:
             sim_end_time = time.time()
             sim_duration = sim_end_time - sim_start_time
 
-            final_susceptible = counts[-1][0]
-            final_infected = counts[-1][1]
-            final_recovered = counts[-1][2]
-            print(f"Simulação {i+1} concluída em {sim_duration:.2f} segundos. "
-                  f"Resultado: {final_susceptible} suscetíveis, "
-                  f"{final_infected} infectados, {final_recovered} recuperados")
+            print(
+                f"Simulação {i+1} concluída em {sim_duration:.2f} segundos. ")
 
         if self.changes_for_viz:
             self.probability_accumulator_infected /= self.num_simulations
@@ -343,20 +339,10 @@ def main():
 
     mapa = Mapa()
 
-    print("Iniciando runner de simulações múltiplas...")
-    print("=" * 60)
-    print("MODO OTIMIZADO:")
-    print("- Histórico completo NÃO é armazenado")
-    print("- Probabilidades calculadas incrementalmente")
-    print("- Memória economizada: ~70-90%")
-    print("=" * 60)
-
     runner = SimulationRunner(
         changes_for_viz=True
     )
-
     runner.run_simulations()
-
     print("\nProcesso de simulações múltiplas concluído!")
     print(f"Memória aproximada usada para probabilidades: "
           f"{(runner.probability_accumulator_infected.nbytes + runner.probability_accumulator_recovered.nbytes) / 1e6:.2f} MB")

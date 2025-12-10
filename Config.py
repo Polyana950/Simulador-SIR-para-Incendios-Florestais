@@ -1,8 +1,8 @@
 """ Configurações centralizadas """
 
 # Configurações do grid
-GRID_SIZE_X = 100
-GRID_SIZE_Y = 100
+GRID_SIZE_X = 1000
+GRID_SIZE_Y = 1000
 
 # Configurações de simulação
 DEFAULT_SIMULATION_STEPS = 200
